@@ -1,0 +1,9 @@
+mineru[core]==3.4.5
+raganything==1.4.4
+lightrag-hku<1.5
+mcp
+fastapi
+uvicorn
+pydantic>=2
+pyyaml
+pypdf

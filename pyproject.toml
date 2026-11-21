@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "civileng_anything"
+version = "0.1.0"
+description = "Traceable knowledge base for civil/structural engineering documents"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "CivilEng-Anything Contributors"}
+]
+keywords = ["civil-engineering", "structural-engineering", "knowledge-base", "document-parsing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "pydantic>=2",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi",
+    "uvicorn",
+]
+mcp = [
+    "mcp",
+]
+parse = [
+    "pypdf",
+]
+
+[project.urls]
+Homepage = "https://github.com/example/civileng-anything"
+Repository = "https://github.com/example/civileng-anything"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["civileng_anything*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
