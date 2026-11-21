@@ -115,9 +115,11 @@ def run_mineru(
 
     # Prepare environment with sanitized proxy settings
     # MinerU talks to its own local API service; inherited NO_PROXY causes httpx crashes
+    # Also set MINERU_MODEL_SOURCE=modelscope (HuggingFace downloads stall on this network; ModelScope works)
     env = os.environ.copy()
     env["NO_PROXY"] = "127.0.0.1,localhost"
     env["no_proxy"] = "127.0.0.1,localhost"
+    env["MINERU_MODEL_SOURCE"] = "modelscope"
 
     # Run MinerU
     result = subprocess.run(

@@ -1,7 +1,8 @@
 """
 CLI for CivilEng-Anything.
 
-Provides subcommands: doctor, ingest, status.
+Provides subcommands: doctor, ingest, status, search, clause, table, figure,
+equation, page, manifest, build-vectors, serve-api, serve-mcp.
 """
 
 import argparse
@@ -15,6 +16,20 @@ from .store import Store
 from .schema import DocumentMeta, DocType
 from .ingest import Ingestor
 from .pdfinspect import inspect_pdf
+from .retrieval import (
+    list_documents,
+    get_document_manifest,
+    search,
+    get_section,
+    get_clause,
+    get_equation,
+    get_table,
+    get_figure,
+    get_page,
+    get_related,
+    SearchMode,
+)
+from .embeddings import get_embedder, HashingEmbedder
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,7 +79,113 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--document-id", default=None, help="Filter by document ID")
 
+    # search
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Search documents (exact/keyword/semantic/hybrid)",
+    )
+    search_parser.add_argument("query", help="Search query")
+    search_parser.add_argument("--document-id", default=None, help="Filter by document ID")
+    search_parser.add_argument("--edition-id", default=None, help="Filter by edition ID")
+    search_parser.add_argument("--jurisdiction", default=None, help="Filter by jurisdiction")
+    search_parser.add_argument("--doc-type", default=None, help="Filter by document type")
+    search_parser.add_argument("--mode", default="hybrid",
+                               choices=["exact", "keyword", "semantic", "hybrid"],
+                               help="Search mode")
+    search_parser.add_argument("--top-k", type=int, default=8, help="Maximum results")
+    search_parser.add_argument("--token-budget", type=int, default=6000, help="Token budget for results")
+    search_parser.add_argument("--expand", action="store_true", help="Expand results with context")
+    search_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # clause
+    clause_parser = subparsers.add_parser(
+        "clause",
+        help="Get exact clause with children, footnotes, amendment links",
+    )
+    clause_parser.add_argument("--document-id", required=True, help="Document ID")
+    clause_parser.add_argument("number", help="Clause number")
+    clause_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # table
+    table_parser = subparsers.add_parser(
+        "table",
+        help="Get exact table with HTML, header context, footnotes",
+    )
+    table_parser.add_argument("--document-id", required=True, help="Document ID")
+    table_parser.add_argument("number", help="Table number")
+    table_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # figure
+    figure_parser = subparsers.add_parser(
+        "figure",
+        help="Get exact figure with asset info",
+    )
+    figure_parser.add_argument("--document-id", required=True, help="Document ID")
+    figure_parser.add_argument("number", help="Figure number")
+    figure_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # equation
+    equation_parser = subparsers.add_parser(
+        "equation",
+        help="Get exact equation",
+    )
+    equation_parser.add_argument("--document-id", required=True, help="Document ID")
+    equation_parser.add_argument("number", help="Equation number")
+    equation_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # page
+    page_parser = subparsers.add_parser(
+        "page",
+        help="Get all items on a PDF page",
+    )
+    page_parser.add_argument("--document-id", required=True, help="Document ID")
+    page_parser.add_argument("pdf_page", type=int, help="PDF page number")
+    page_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # manifest
+    manifest_parser = subparsers.add_parser(
+        "manifest",
+        help="Get document manifest with page counts and amendment relations",
+    )
+    manifest_parser.add_argument("--document-id", required=True, help="Document ID")
+    manifest_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # build-vectors
+    build_vectors_parser = subparsers.add_parser(
+        "build-vectors",
+        help="Build vector index for current embedder",
+    )
+    build_vectors_parser.add_argument("--document-id", default=None, help="Optional document ID to limit build")
+    build_vectors_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # serve-api
+    serve_api_parser = subparsers.add_parser(
+        "serve-api",
+        help="Start FastAPI HTTP server",
+    )
+    serve_api_parser.add_argument("--host", default=None, help="Host (default from settings)")
+    serve_api_parser.add_argument("--port", type=int, default=None, help="Port (default from settings)")
+
+    # serve-mcp
+    serve_mcp_parser = subparsers.add_parser(
+        "serve-mcp",
+        help="Start MCP server (stdio or HTTP)",
+    )
+    serve_mcp_parser.add_argument("--transport", choices=["stdio", "http"], default="stdio", help="Transport mode")
+    serve_mcp_parser.add_argument("--host", default="0.0.0.0", help="Host for HTTP transport")
+    serve_mcp_parser.add_argument("--port", type=int, default=8001, help="Port for HTTP transport")
+
     return parser
+
+
+def _get_store_and_embedder(settings: Settings):
+    """Get store and embedder (with HashingEmbedder fallback for tests)."""
+    store = Store(settings.db_path)
+    try:
+        embedder = get_embedder(settings)
+    except RuntimeError:
+        embedder = HashingEmbedder()
+    return store, embedder
 
 
 def cmd_doctor(args: argparse.Namespace, settings: Settings) -> int:
@@ -198,6 +319,226 @@ def cmd_status(args: argparse.Namespace, settings: Settings) -> int:
         store.close()
 
 
+def cmd_search(args: argparse.Namespace, settings: Settings) -> int:
+    """Search documents."""
+    store, embedder = _get_store_and_embedder(settings)
+
+    try:
+        mode = SearchMode(args.mode)
+    except ValueError:
+        print(f"Error: Invalid mode: {args.mode}", file=sys.stderr)
+        return 1
+
+    response = search(
+        store=store,
+        query=args.query,
+        document_id=args.document_id,
+        edition_id=args.edition_id,
+        jurisdiction=args.jurisdiction,
+        doc_type=args.doc_type,
+        mode=args.mode,
+        top_k=args.top_k,
+        token_budget=args.token_budget,
+        expand=args.expand,
+        embedder=embedder,
+        settings=settings,
+    )
+
+    if args.json:
+        print(json.dumps({
+            "results": [r.to_dict() for r in response.results],
+            "mode": response.mode.value,
+            "baseline_editions": response.baseline_editions,
+            "amendments_included": response.amendments_included,
+            "has_more_context": response.has_more_context,
+            "total_matches": response.total_matches,
+            "degraded": response.degraded,
+            "degradation_reason": response.degradation_reason,
+        }, indent=2))
+    else:
+        print(f"Mode: {response.mode.value} | Matches: {response.total_matches} | Degraded: {response.degraded}")
+        if response.degradation_reason:
+            print(f"  Degradation: {response.degradation_reason}")
+        print()
+        for i, result in enumerate(response.results):
+            item = result.item
+            doc = result.document
+            print(f"  [{i+1}] {item.item_id} ({item.type.value}) - Score: {result.score:.4f}")
+            if item.number:
+                print(f"       Number: {item.number}")
+            if doc:
+                print(f"       Document: {doc.document_id} ({doc.edition_id})")
+            if result.match_type:
+                print(f"       Match: {result.match_type}")
+            if result.has_more_context:
+                print(f"       [has more context]")
+            # Print snippet
+            text = item.text or ""
+            snippet = text[:200] + ("..." if len(text) > 200 else "")
+            print(f"       {snippet}")
+            print()
+
+    store.close()
+    return 0
+
+
+def _print_result(result, as_json: bool):
+    """Print a single SearchResult."""
+    if as_json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        item = result.item
+        doc = result.document
+        print(f"Item: {item.item_id} ({item.type.value})")
+        if item.number:
+            print(f"Number: {item.number}")
+        if doc:
+            print(f"Document: {doc.document_id} ({doc.edition_id})")
+        print(f"Text: {(item.text or '')[:500]}")
+        if result.has_more_context:
+            print("[has more context]")
+
+
+def cmd_clause(args: argparse.Namespace, settings: Settings) -> int:
+    """Get clause."""
+    store, _ = _get_store_and_embedder(settings)
+    result = get_clause(store, args.document_id, args.number)
+    store.close()
+    if result is None:
+        print(f"Clause not found: {args.number}", file=sys.stderr)
+        return 1
+    _print_result(result, args.json)
+    return 0
+
+
+def cmd_table(args: argparse.Namespace, settings: Settings) -> int:
+    """Get table."""
+    store, _ = _get_store_and_embedder(settings)
+    result = get_table(store, args.document_id, args.number)
+    store.close()
+    if result is None:
+        print(f"Table not found: {args.number}", file=sys.stderr)
+        return 1
+    _print_result(result, args.json)
+    return 0
+
+
+def cmd_figure(args: argparse.Namespace, settings: Settings) -> int:
+    """Get figure."""
+    store, _ = _get_store_and_embedder(settings)
+    result = get_figure(store, args.document_id, args.number)
+    store.close()
+    if result is None:
+        print(f"Figure not found: {args.number}", file=sys.stderr)
+        return 1
+    _print_result(result, args.json)
+    return 0
+
+
+def cmd_equation(args: argparse.Namespace, settings: Settings) -> int:
+    """Get equation."""
+    store, _ = _get_store_and_embedder(settings)
+    result = get_equation(store, args.document_id, args.number)
+    store.close()
+    if result is None:
+        print(f"Equation not found: {args.number}", file=sys.stderr)
+        return 1
+    _print_result(result, args.json)
+    return 0
+
+
+def cmd_page(args: argparse.Namespace, settings: Settings) -> int:
+    """Get page items."""
+    store, _ = _get_store_and_embedder(settings)
+    results = get_page(store, args.document_id, args.pdf_page)
+    store.close()
+    if args.json:
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        print(f"Page {args.pdf_page} of {args.document_id}: {len(results)} items")
+        for i, result in enumerate(results):
+            item = result.item
+            print(f"  [{i+1}] {item.item_id} ({item.type.value}) - {item.number or ''}")
+            text = item.text or ""
+            print(f"       {text[:200]}{'...' if len(text) > 200 else ''}")
+    return 0
+
+
+def cmd_manifest(args: argparse.Namespace, settings: Settings) -> int:
+    """Get document manifest."""
+    store, _ = _get_store_and_embedder(settings)
+    manifest = get_document_manifest(store, args.document_id)
+    store.close()
+    if manifest is None:
+        print(f"Document not found: {args.document_id}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        doc = manifest["document"]
+        counts = manifest["page_counts"]
+        print(f"Document: {doc.document_id} ({doc.edition_id})")
+        print(f"  Title: {doc.title}")
+        print(f"  Pages: total={counts['total']} done={counts['done']} failed={counts['failed']} retry={counts['retry_pending']} review={counts['needs_review']} pending={counts['pending']}")
+        if manifest["amendments"]:
+            print("  Amendments:")
+            for am in manifest["amendments"]:
+                print(f"    - {am['document_id']} ({am['edition_id']}): {am['title']}")
+    return 0
+
+
+def cmd_build_vectors(args: argparse.Namespace, settings: Settings) -> int:
+    """Build vector index."""
+    store, embedder = _get_store_and_embedder(settings)
+
+    from .index import VectorIndex
+    index = VectorIndex(settings.db_path)
+
+    result = index.build_vectors(store, embedder, document_id=args.document_id)
+    store.close()
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Built: {result['built_count']} vectors")
+        print(f"Total items: {result['total_items']}")
+    return 0
+
+
+def cmd_serve_api(args: argparse.Namespace, settings: Settings) -> int:
+    """Start FastAPI HTTP server."""
+    try:
+        import uvicorn
+    except ImportError:
+        print("Error: uvicorn not installed. Install with: pip install uvicorn", file=sys.stderr)
+        return 1
+
+    host = args.host or settings.host
+    port = args.port or settings.api_port
+
+    print(f"Starting API server on {host}:{port}...")
+    # Import here to avoid loading at CLI startup
+    from .api import app
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
+def cmd_serve_mcp(args: argparse.Namespace, settings: Settings) -> int:
+    """Start MCP server."""
+    try:
+        from .mcp_server import run_stdio_server, run_http_server
+    except ImportError as e:
+        print(f"Error: MCP not available: {e}", file=sys.stderr)
+        return 1
+
+    if args.transport == "stdio":
+        import asyncio
+        asyncio.run(run_stdio_server())
+    else:
+        run_http_server(args.host, args.port)
+    return 0
+
+
 def main() -> int:
     """Main entry point."""
     parser = build_parser()
@@ -217,6 +558,26 @@ def main() -> int:
         return cmd_ingest(args, settings)
     elif args.command == "status":
         return cmd_status(args, settings)
+    elif args.command == "search":
+        return cmd_search(args, settings)
+    elif args.command == "clause":
+        return cmd_clause(args, settings)
+    elif args.command == "table":
+        return cmd_table(args, settings)
+    elif args.command == "figure":
+        return cmd_figure(args, settings)
+    elif args.command == "equation":
+        return cmd_equation(args, settings)
+    elif args.command == "page":
+        return cmd_page(args, settings)
+    elif args.command == "manifest":
+        return cmd_manifest(args, settings)
+    elif args.command == "build-vectors":
+        return cmd_build_vectors(args, settings)
+    elif args.command == "serve-api":
+        return cmd_serve_api(args, settings)
+    elif args.command == "serve-mcp":
+        return cmd_serve_mcp(args, settings)
     else:
         parser.print_help()
         return 1

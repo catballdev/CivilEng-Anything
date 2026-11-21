@@ -62,10 +62,28 @@ table against the PDF's real page count. A partial parse is never reported as
   installed against `torch 2.15.0+cpu` fails at import with
   `operator torchvision::nms does not exist`, which also kills MinerU's
   layout model. Working pair: `torch 2.15.0+cpu` + `torchvision 0.29.2+cpu`.
+- **MinerU model source**: the default HuggingFace download stalls on this
+  VM's egress proxy (a 268 MB blob sat unmoving for 15+ minutes).
+  `MINERU_MODEL_SOURCE=modelscope` downloads the same PDF-Extract-Kit models
+  at full speed (~1.1 GB, minutes). The ingest adapter sets this variable.
+  Pilot QC (16 pages, CoP SUC 2013): 289 blocks, clause 9.2.1 located on the
+  correct page, 33 equations with LaTeX, 6 tables with HTML bodies, Figure
+  9.5 extracted with caption. Known quality caveat: MinerU's formula
+  recognition sometimes misreads subscript letters (e.g. `E_c` rendered with
+  a wrong subscript glyph) — LaTeX is preserved verbatim as parsed and the
+  original PDF page remains the ground truth.
 - **MinerU + proxy env**: MinerU talks to its own local API service via httpx;
   the VM's inherited `NO_PROXY` (bracketed IPv6 entries) makes httpx raise
   `Invalid port: ':1]'`. The ingest adapter therefore launches MinerU with a
   sanitized `NO_PROXY=127.0.0.1,localhost`.
+
+- **Embedding stack vs MinerU**: `sentence-transformers 6.3.0` requires
+  `huggingface-hub>=1.3`, but hub 1.x removed
+  `huggingface_hub.utils._hf_folder`, which MinerU 3.4.5 imports — they
+  cannot coexist in one environment. Decision: **fastembed (ONNX) is the
+  embedding backend on this machine** (hub pinned to `0.36.2`);
+  sentence-transformers remains an optional lazy backend in code for
+  machines without MinerU, and is NOT installed here.
 
 ## Environment constraints recorded
 

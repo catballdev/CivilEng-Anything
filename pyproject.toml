@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "civileng_anything"
-version = "0.1.0"
+version = "0.3.0"
 description = "Traceable knowledge base for civil/structural engineering documents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "pydantic>=2",
     "pyyaml",
+    "numpy",
 ]
 
 [project.optional-dependencies]
@@ -33,9 +34,22 @@ api = [
 ]
 mcp = [
     "mcp",
+    "fastapi",
+    "uvicorn",
 ]
 parse = [
     "pypdf",
+]
+embed = [
+    "fastembed",
+    "sentence-transformers",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "ruff",
+    "mypy",
 ]
 
 [project.urls]
@@ -51,6 +65,7 @@ include = ["civileng_anything*"]
 
 [project.scripts]
 civileng = "civileng_anything.cli:main"
+civileng-mcp = "civileng_anything.mcp_server:run_stdio_server"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

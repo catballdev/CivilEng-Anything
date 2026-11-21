@@ -402,6 +402,96 @@ class Store:
         ).fetchall()
         return [self._row_to_item(row) for row in rows]
 
+    def get_items_by_section_path(
+        self, document_id: str, section_path: list[str]
+    ) -> list[ContentItem]:
+        """Get all items in a document whose section_path starts with the given path."""
+        if not section_path:
+            return []
+        path_json = json.dumps(section_path)
+        # Match exact path or path as prefix (e.g., ["1"] matches ["1"] and ["1", "2"])
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM items
+            WHERE document_id = ? AND (section_path = ? OR section_path LIKE ?)
+            ORDER BY pdf_page, item_id
+            """,
+            (document_id, path_json, path_json[:-1] + ",%"),
+        ).fetchall()
+        return [self._row_to_item(row) for row in rows]
+
+    def get_items_by_page(
+        self, document_id: str, pdf_page: int
+    ) -> list[ContentItem]:
+        """Get all items on a specific PDF page in a document."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM items
+            WHERE document_id = ? AND pdf_page = ?
+            ORDER BY item_id
+            """,
+            (document_id, pdf_page),
+        ).fetchall()
+        return [self._row_to_item(row) for row in rows]
+
+    def get_asset(self, asset_id: str):
+        """Get asset by ID."""
+        from .schema import AssetMeta
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM assets WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        sha256_val = row["sha256"] if "sha256" in row.keys() else ""
+        return AssetMeta(
+            asset_id=row["asset_id"],
+            document_id=row["document_id"],
+            item_id=row["item_id"],
+            kind=row["kind"],
+            file_path=row["path"],
+            mime_type=row["mime_type"],
+            width=row["width"],
+            height=row["height"],
+            sha256=sha256_val,
+            description=row["description"],
+        )
+
+    def upsert_asset(self, asset: "AssetMeta") -> None:
+        """Insert or update an asset."""
+        from .schema import AssetMeta
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO assets (
+                    asset_id, document_id, item_id, kind, mime_type, path,
+                    width, height, description, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    document_id = excluded.document_id,
+                    item_id = excluded.item_id,
+                    kind = excluded.kind,
+                    mime_type = excluded.mime_type,
+                    path = excluded.path,
+                    width = excluded.width,
+                    height = excluded.height,
+                    description = excluded.description
+                """,
+                (
+                    asset.asset_id,
+                    asset.document_id,
+                    asset.item_id,
+                    asset.kind,
+                    asset.mime_type,
+                    asset.file_path,
+                    asset.width,
+                    asset.height,
+                    asset.description,
+                ),
+            )
+
     def _row_to_item(self, row: sqlite3.Row) -> ContentItem:
         from .schema import ItemType, ContentOrigin, ItemStatus
         return ContentItem(

@@ -56,6 +56,14 @@ class ItemStatus(str, Enum):
     FAILED = "failed"
 
 
+class SearchMode(str, Enum):
+    """Search mode for retrieval."""
+    EXACT = "exact"
+    KEYWORD = "keyword"
+    SEMANTIC = "semantic"
+    HYBRID = "hybrid"
+
+
 class DocumentMeta(BaseModel):
     """Document metadata per ARCHITECTURE.md canonical format."""
     model_config = ConfigDict(extra="forbid")
@@ -139,3 +147,24 @@ class SearchResult(BaseModel):
     score: float
     has_more_context: bool = False
     related: list[str] = Field(default_factory=list)
+    match_type: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return self.model_dump()
+
+
+class AssetMeta(BaseModel):
+    """Asset metadata per ARCHITECTURE.md canonical format."""
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    document_id: str
+    item_id: Optional[str] = None
+    kind: str  # figure, page_render, etc.
+    mime_type: str
+    file_path: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    sha256: str
+    description: Optional[str] = None
