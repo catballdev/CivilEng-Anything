@@ -21,6 +21,10 @@ from .schema import (
 )
 from .ids import make_item_id, content_hash
 from .store import Store
+from .pdfinspect import inspect_pdf, PdfInfo
+from .parsers import run_mineru, MineruResult, run_docling, DoclingResult, ParserNotAvailable
+from .normalize import normalize_mineru, extract_cross_refs
+from .ingest import Ingestor, IngestReport
 
 __all__ = [
     "__version__",
@@ -39,4 +43,15 @@ __all__ = [
     "make_item_id",
     "content_hash",
     "Store",
+    "inspect_pdf",
+    "PdfInfo",
+    "run_mineru",
+    "MineruResult",
+    "run_docling",
+    "DoclingResult",
+    "ParserNotAvailable",
+    "normalize_mineru",
+    "extract_cross_refs",
+    "Ingestor",
+    "IngestReport",
 ]

@@ -52,6 +52,21 @@ page range (`-s 0 -e <last>`) and afterwards reconciles the per-page status
 table against the PDF's real page count. A partial parse is never reported as
 "book complete".
 
+## Install gotchas found on this machine (2026-11-21, all reproduced)
+
+- **pip + /tmp**: this VM's `/tmp` is a 512 MB tmpfs. pip stages big wheels
+  there, so the 539 MB torch wheel died with `No space left on device`.
+  Always run installs with `TMPDIR` pointing at a home-disk directory.
+- **torch must be the CPU build**: install `torch` and `torchvision` from
+  `https://download.pytorch.org/whl/cpu`. PyPI's plain `torchvision` wheel
+  installed against `torch 2.15.0+cpu` fails at import with
+  `operator torchvision::nms does not exist`, which also kills MinerU's
+  layout model. Working pair: `torch 2.15.0+cpu` + `torchvision 0.29.2+cpu`.
+- **MinerU + proxy env**: MinerU talks to its own local API service via httpx;
+  the VM's inherited `NO_PROXY` (bracketed IPv6 entries) makes httpx raise
+  `Invalid port: ':1]'`. The ingest adapter therefore launches MinerU with a
+  sanitized `NO_PROXY=127.0.0.1,localhost`.
+
 ## Environment constraints recorded
 
 - VM: 4 vCPU, ~7.7 GB RAM, no GPU, ~60 GB free disk. MinerU runs its CPU

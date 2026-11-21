@@ -49,6 +49,9 @@ include = ["civileng_anything*"]
 [tool.setuptools.package-dir]
 "" = "src"
 
+[project.scripts]
+civileng = "civileng_anything.cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

@@ -97,6 +97,23 @@ CREATE TABLE IF NOT EXISTS assets (
     FOREIGN KEY (item_id) REFERENCES items(item_id)
 );
 
+-- Parse runs table for tracking ingest runs
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    parser TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    config_json TEXT NOT NULL,  -- JSON
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    pages_done TEXT NOT NULL,  -- JSON array of 1-based page numbers
+    pages_failed TEXT NOT NULL,  -- JSON array of 1-based page numbers
+    items_created INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running',  -- running, completed, failed
+    error_detail TEXT,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id)
+);
+
 -- FTS5 virtual table for full-text search
 -- tokenizer unicode61 preserves engineering symbols (no stemming)
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
@@ -135,6 +152,7 @@ END;
 CREATE INDEX IF NOT EXISTS idx_items_document_edition ON items(document_id, edition_id);
 CREATE INDEX IF NOT EXISTS idx_items_type_number ON items(document_id, edition_id, type, number);
 CREATE INDEX IF NOT EXISTS idx_pages_document ON pages(document_id);
+CREATE INDEX IF NOT EXISTS idx_runs_document ON runs(document_id);
 """
 
 
@@ -258,6 +276,16 @@ class Store:
         conn = self._get_conn()
         rows = conn.execute("SELECT * FROM documents ORDER BY created_at").fetchall()
         return [self._row_to_document(row) for row in rows]
+
+    def get_document_by_sha256(self, sha256: str) -> Optional[DocumentMeta]:
+        """Retrieve a document by its original SHA-256 hash."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM documents WHERE original_sha256 = ?", (sha256,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_document(row)
 
     def _row_to_document(self, row: sqlite3.Row) -> DocumentMeta:
         from .schema import DocType
@@ -422,6 +450,133 @@ class Store:
                     page.detail,
                 ),
             )
+
+    def get_page_statuses(self, document_id: str) -> list[PageStatus]:
+        """Get all page statuses for a document."""
+        from .schema import PageStatusEnum
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM pages WHERE document_id = ? ORDER BY pdf_page",
+            (document_id,),
+        ).fetchall()
+        return [
+            PageStatus(
+                document_id=row["document_id"],
+                pdf_page=row["pdf_page"],
+                status=PageStatusEnum(row["status"]),
+                parser=row["parser"],
+                detail=row["detail"],
+            )
+            for row in rows
+        ]
+
+    def get_done_pages(self, document_id: str) -> set[int]:
+        """Get set of page numbers that have been successfully parsed."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT pdf_page FROM pages WHERE document_id = ? AND status = 'done'",
+            (document_id,),
+        ).fetchall()
+        return {row["pdf_page"] for row in rows}
+
+    def get_failed_pages(self, document_id: str) -> set[int]:
+        """Get set of page numbers that failed parsing."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT pdf_page FROM pages WHERE document_id = ? AND status = 'failed'",
+            (document_id,),
+        ).fetchall()
+        return {row["pdf_page"] for row in rows}
+
+    # --- Run operations ---
+
+    def create_run(
+        self,
+        run_id: str,
+        document_id: str,
+        parser: str,
+        parser_version: str,
+        config: dict,
+    ) -> None:
+        """Create a new parse run record."""
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    run_id, document_id, parser, parser_version, config_json,
+                    started_at, finished_at, pages_done, pages_failed,
+                    items_created, status
+                ) VALUES (?, ?, ?, ?, ?, datetime('now'), NULL, '[]', '[]', 0, 'running')
+                """,
+                (
+                    run_id,
+                    document_id,
+                    parser,
+                    parser_version,
+                    json.dumps(config),
+                ),
+            )
+
+    def update_run(
+        self,
+        run_id: str,
+        pages_done: list[int] = None,
+        pages_failed: list[int] = None,
+        items_created: int = None,
+        status: str = None,
+        error_detail: str = None,
+    ) -> None:
+        """Update a parse run record."""
+        with self._transaction() as conn:
+            # Build dynamic update
+            updates = []
+            params = []
+
+            if pages_done is not None:
+                updates.append("pages_done = ?")
+                params.append(json.dumps(pages_done))
+            if pages_failed is not None:
+                updates.append("pages_failed = ?")
+                params.append(json.dumps(pages_failed))
+            if items_created is not None:
+                updates.append("items_created = ?")
+                params.append(items_created)
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status)
+                if status in ("completed", "failed"):
+                    updates.append("finished_at = datetime('now')")
+            if error_detail is not None:
+                updates.append("error_detail = ?")
+                params.append(error_detail)
+
+            if not updates:
+                return
+
+            params.append(run_id)
+            conn.execute(
+                f"UPDATE runs SET {', '.join(updates)} WHERE run_id = ?",
+                params,
+            )
+
+    def get_run(self, run_id: str) -> Optional[dict]:
+        """Get a parse run by ID."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def get_runs_for_document(self, document_id: str) -> list[dict]:
+        """Get all parse runs for a document."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM runs WHERE document_id = ? ORDER BY started_at DESC",
+            (document_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     # --- FTS search ---
 
