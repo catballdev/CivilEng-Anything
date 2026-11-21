@@ -272,13 +272,8 @@ def cmd_import_parse(args: argparse.Namespace, settings: Settings) -> int:
     store = Store(settings.db_path)
     
     try:
-        # If document not registered and --register-if-missing, register it
-        doc = store.get_document(args.document_id)
-        if doc is None:
-            if not args.register_if_missing:
-                print(f"Error: Document not registered: {args.document_id}", file=sys.stderr)
-                print("Use --register-if-missing with --title and --pdf-path to register first.", file=sys.stderr)
-                return 1
+        # Ensure document is registered (and edition_id is synced)
+        if args.register_if_missing:
             if not args.title or not args.pdf_path:
                 print("Error: --title and --pdf-path are required with --register-if-missing", file=sys.stderr)
                 return 1
@@ -286,7 +281,6 @@ def cmd_import_parse(args: argparse.Namespace, settings: Settings) -> int:
                 print(f"Error: PDF file not found: {args.pdf_path}", file=sys.stderr)
                 return 1
             
-            # Register the document
             doc = register_document_if_needed(
                 settings=settings,
                 store=store,
@@ -302,7 +296,19 @@ def cmd_import_parse(args: argparse.Namespace, settings: Settings) -> int:
                 parser_name=args.parser_name,
                 parser_version=args.parser_version,
             )
-            print(f"Registered document: {doc.document_id} ({doc.edition_id})")
+            print(f"Registered/updated document: {doc.document_id} ({doc.edition_id})")
+        else:
+            # Document must exist; sync edition_id if needed
+            doc = store.get_document(args.document_id)
+            if doc is None:
+                print(f"Error: Document not registered: {args.document_id}", file=sys.stderr)
+                print("Use --register-if-missing with --title and --pdf-path to register first.", file=sys.stderr)
+                return 1
+            # Sync edition_id if it differs
+            if doc.edition_id != args.edition_id:
+                doc.edition_id = args.edition_id
+                store.upsert_document(doc)
+                print(f"Updated document edition_id: {doc.document_id} ({doc.edition_id})")
         
         # Import the parse
         importer = ImportParser(settings, store)
@@ -489,14 +495,16 @@ def _print_result(result, as_json: bool):
     if as_json:
         print(json.dumps(result.to_dict(), indent=2))
     else:
-        item = result.item
-        doc = result.document
-        print(f"Item: {item.item_id} ({item.type.value})")
-        if item.number:
-            print(f"Number: {item.number}")
-        if doc:
-            print(f"Document: {doc.document_id} ({doc.edition_id})")
-        print(f"Text: {(item.text or '')[:500]}")
+        # SearchResult has item_id, document_id, edition_id, doc_title, number, snippet, pdf_page, etc.
+        print(f"Item: {result.item_id}")
+        if result.number:
+            print(f"Number: {result.number}")
+        print(f"Document: {result.document_id} ({result.edition_id})")
+        print(f"Title: {result.doc_title}")
+        print(f"PDF Page: {result.pdf_page}")
+        if result.printed_page:
+            print(f"Printed Page: {result.printed_page}")
+        print(f"Text: {result.snippet}")
         if result.has_more_context:
             print("[has more context]")
 

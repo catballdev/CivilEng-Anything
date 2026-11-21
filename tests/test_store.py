@@ -447,5 +447,246 @@ def test_make_item_id_format():
     assert make_item_id("doc/with:special*chars", 1, 1) == "doc_with_special_chars-p0001-0001"
 
 
+def test_schema_migration_adds_summary_columns(temp_db):
+    """Regression test: opening a pre-Brief-04 DB adds missing summary columns.
+
+    This simulates a database created before Brief 04 (without summary_en,
+    summary_tc, generated_questions columns in items table) and verifies that
+    the current code migrates the schema idempotently on open.
+    """
+    import sqlite3
+
+    # 1. Create a database with the OLD schema (missing Brief 04 columns)
+    conn = sqlite3.connect(temp_db)
+    conn.execute("""
+        CREATE TABLE items (
+            item_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            edition_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            parent_id TEXT,
+            section_path TEXT NOT NULL,
+            number TEXT,
+            text TEXT NOT NULL,
+            latex TEXT,
+            table_html TEXT,
+            pdf_page INTEGER NOT NULL,
+            printed_page TEXT,
+            bbox TEXT,
+            asset_ids TEXT NOT NULL,
+            cross_refs TEXT NOT NULL,
+            footnote_ids TEXT NOT NULL,
+            amendment_links TEXT NOT NULL,
+            content_origin TEXT NOT NULL,
+            derived_info TEXT,
+            status TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    # Also create documents table so Store doesn't fail
+    conn.execute("""
+        CREATE TABLE documents (
+            document_id TEXT PRIMARY KEY,
+            document_family_id TEXT NOT NULL,
+            edition_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            publisher TEXT,
+            jurisdiction TEXT,
+            doc_type TEXT NOT NULL,
+            language TEXT,
+            publication_date TEXT,
+            revision_date TEXT,
+            source_url TEXT,
+            retrieved_at TEXT,
+            original_sha256 TEXT NOT NULL UNIQUE,
+            total_pdf_pages INTEGER NOT NULL,
+            parser_name TEXT NOT NULL,
+            parser_version TEXT NOT NULL,
+            parser_config TEXT NOT NULL,
+            parse_run_id TEXT NOT NULL,
+            completeness REAL NOT NULL DEFAULT 0.0,
+            qc_status TEXT NOT NULL DEFAULT 'pending',
+            amendment_relations TEXT NOT NULL,
+            version_relations TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # 2. Open with current Store (should migrate)
+    store = Store(temp_db)
+
+    # 3. Verify migration added the columns
+    conn = store._get_conn()
+    cursor = conn.execute("PRAGMA table_info(items)")
+    columns = {row["name"] for row in cursor.fetchall()}
+
+    assert "summary_en" in columns, "summary_en column should be added by migration"
+    assert "summary_tc" in columns, "summary_tc column should be added by migration"
+    assert "generated_questions" in columns, "generated_questions column should be added by migration"
+
+    # 4. Verify we can insert items with the new fields
+    from civileng_anything.ids import make_item_id, content_hash
+    from civileng_anything.schema import ContentItem, ItemType, ContentOrigin, ItemStatus
+
+    item = ContentItem(
+        item_id=make_item_id("test-doc", 1, 1),
+        document_id="test-doc",
+        edition_id="ed1",
+        type=ItemType.CLAUSE,
+        parent_id=None,
+        section_path=["Test"],
+        number="1.1",
+        text="Test clause with summary",
+        pdf_page=1,
+        content_origin=ContentOrigin.ORIGINAL,
+        status=ItemStatus.PARSED,
+        summary_en="Test summary in English",
+        summary_tc="測試摘要",
+        generated_questions=["What is this about?"],
+    )
+
+    store.add_items([item])
+
+    # 5. Verify the data was stored correctly
+    retrieved = store.get_item(item.item_id)
+    assert retrieved is not None
+    assert retrieved.summary_en == "Test summary in English"
+    assert retrieved.summary_tc == "測試摘要"
+    assert retrieved.generated_questions == ["What is this about?"]
+
+    store.close()
+
+
+def test_schema_migration_idempotent(temp_db):
+    """Test that running migration twice doesn't fail or duplicate columns."""
+    import sqlite3
+
+    # Create old schema (pre-Brief-04: has all columns except summary_en, summary_tc, generated_questions)
+    conn = sqlite3.connect(temp_db)
+    conn.execute("""
+        CREATE TABLE items (
+            item_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            edition_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            parent_id TEXT,
+            section_path TEXT NOT NULL,
+            number TEXT,
+            text TEXT NOT NULL,
+            latex TEXT,
+            table_html TEXT,
+            pdf_page INTEGER NOT NULL,
+            printed_page TEXT,
+            bbox TEXT,
+            asset_ids TEXT NOT NULL,
+            cross_refs TEXT NOT NULL,
+            footnote_ids TEXT NOT NULL,
+            amendment_links TEXT NOT NULL,
+            content_origin TEXT NOT NULL,
+            derived_info TEXT,
+            status TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE documents (
+            document_id TEXT PRIMARY KEY,
+            document_family_id TEXT NOT NULL,
+            edition_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            publisher TEXT,
+            jurisdiction TEXT,
+            doc_type TEXT NOT NULL,
+            language TEXT,
+            publication_date TEXT,
+            revision_date TEXT,
+            source_url TEXT,
+            retrieved_at TEXT,
+            original_sha256 TEXT NOT NULL UNIQUE,
+            total_pdf_pages INTEGER NOT NULL,
+            parser_name TEXT NOT NULL,
+            parser_version TEXT NOT NULL,
+            parser_config TEXT NOT NULL,
+            parse_run_id TEXT NOT NULL,
+            completeness REAL NOT NULL DEFAULT 0.0,
+            qc_status TEXT NOT NULL DEFAULT 'pending',
+            amendment_relations TEXT NOT NULL,
+            version_relations TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE pages (
+            document_id TEXT NOT NULL,
+            pdf_page INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            parser TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (document_id, pdf_page)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE assets (
+            asset_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            item_id TEXT,
+            kind TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            path TEXT NOT NULL,
+            width INTEGER,
+            height INTEGER,
+            description TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            parser TEXT NOT NULL,
+            parser_version TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            pages_done TEXT NOT NULL,
+            pages_failed TEXT NOT NULL,
+            items_created INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'running',
+            error_detail TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Open first time (migrates)
+    store1 = Store(temp_db)
+    store1.close()
+
+    # Open second time (should be idempotent)
+    store2 = Store(temp_db)
+
+    # Verify columns exist and no duplicates
+    conn = store2._get_conn()
+    cursor = conn.execute("PRAGMA table_info(items)")
+    columns = [row["name"] for row in cursor.fetchall()]
+
+    # Each column should appear exactly once
+    assert columns.count("summary_en") == 1
+    assert columns.count("summary_tc") == 1
+    assert columns.count("generated_questions") == 1
+
+    store2.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

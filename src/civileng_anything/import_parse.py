@@ -389,6 +389,11 @@ def register_document_if_needed(
                 f"  Registered: {existing.original_sha256}\n"
                 f"  File:       {sha256}"
             )
+        # Update edition_id if it differs (to keep items and document in sync)
+        if existing.edition_id != edition_id:
+            logger.info("Updating document edition_id from '%s' to '%s'", existing.edition_id, edition_id)
+            existing.edition_id = edition_id
+            store.upsert_document(existing)
         return existing
     
     # Check if another document has this SHA-256

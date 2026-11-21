@@ -223,7 +223,35 @@ class Store:
         """Initialize database schema."""
         conn = self._get_conn()
         conn.executescript(SCHEMA_SQL)
+        self._migrate_schema(conn)
         conn.commit()
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Run idempotent migrations for schema additions."""
+        # Migration: Add summary_en, summary_tc, generated_questions to items table (Brief 04)
+        self._ensure_columns_exist(
+            conn,
+            "items",
+            {
+                "summary_en": "TEXT",
+                "summary_tc": "TEXT",
+                "generated_questions": "TEXT",  # JSON array
+            },
+        )
+
+    def _ensure_columns_exist(
+        self, conn: sqlite3.Connection, table: str, columns: dict[str, str]
+    ) -> None:
+        """Add missing columns to a table idempotently."""
+        # Get existing columns
+        cursor = conn.execute(f"PRAGMA table_info({table})")
+        existing = {row["name"] for row in cursor.fetchall()}
+
+        for col_name, col_type in columns.items():
+            if col_name not in existing:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                )
 
     # --- Document operations ---
 
