@@ -25,6 +25,7 @@ dependencies = [
     "pydantic>=2",
     "pyyaml",
     "numpy",
+    "jieba",
 ]
 
 [project.optional-dependencies]

@@ -29,6 +29,7 @@ from .retrieval import (
     get_related,
     SearchResponse,
 )
+from .tree import build_document_tree
 from .embeddings import get_embedder, HashingEmbedder
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,18 @@ TOOLS = [
         },
     },
     {
+        "name": "get_document_structure",
+        "description": "Get document clause tree structure (sections, clauses, paragraphs hierarchy)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "Document ID"},
+                "edition_id": {"type": "string", "description": "Edition ID (optional, defaults to latest)"},
+            },
+            "required": ["document_id"],
+        },
+    },
+    {
         "name": "search",
         "description": "Unified search across exact, keyword, semantic, and hybrid modes",
         "inputSchema": {
@@ -101,9 +114,9 @@ TOOLS = [
                 "doc_type": {"type": "string", "description": "Filter by document type"},
                 "mode": {
                     "type": "string",
-                    "enum": ["exact", "keyword", "semantic", "hybrid"],
-                    "default": "hybrid",
-                    "description": "Search mode",
+                    "enum": ["exact", "keyword", "semantic", "hybrid", "hybrid-lexical"],
+                    "default": "hybrid-lexical",
+                    "description": "Search mode (default: hybrid-lexical, vectorless-first)",
                 },
                 "top_k": {"type": "integer", "default": 8, "description": "Maximum results"},
                 "token_budget": {"type": "integer", "default": 6000, "description": "Token budget for results"},
@@ -231,6 +244,16 @@ def _handle_get_document_manifest(args: dict) -> dict:
         manifest = dict(manifest)
         manifest["document"] = manifest["document"].model_dump()
     return manifest
+
+
+def _handle_get_document_structure(args: dict) -> dict:
+    store = get_store()
+    document_id = args["document_id"]
+    edition_id = args.get("edition_id")
+    tree_data = build_document_tree(store, document_id, edition_id)
+    if tree_data is None:
+        raise ValueError(f"Document not found: {document_id}")
+    return tree_data
 
 
 def _handle_search(args: dict) -> dict:
@@ -362,6 +385,7 @@ def _handle_build_vectors(args: dict) -> dict:
 HANDLERS = {
     "list_documents": _handle_list_documents,
     "get_document_manifest": _handle_get_document_manifest,
+    "get_document_structure": _handle_get_document_structure,
     "search": _handle_search,
     "get_section": _handle_get_section,
     "get_clause": _handle_get_clause,

@@ -2,7 +2,7 @@
 CLI for CivilEng-Anything.
 
 Provides subcommands: doctor, ingest, status, search, clause, table, figure,
-equation, page, manifest, build-vectors, serve-api, serve-mcp.
+equation, page, manifest, tree, build-vectors, serve-api, serve-mcp.
 """
 
 import argparse
@@ -82,16 +82,16 @@ def build_parser() -> argparse.ArgumentParser:
     # search
     search_parser = subparsers.add_parser(
         "search",
-        help="Search documents (exact/keyword/semantic/hybrid)",
+        help="Search documents (exact/keyword/semantic/hybrid/hybrid-lexical)",
     )
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("--document-id", default=None, help="Filter by document ID")
     search_parser.add_argument("--edition-id", default=None, help="Filter by edition ID")
     search_parser.add_argument("--jurisdiction", default=None, help="Filter by jurisdiction")
     search_parser.add_argument("--doc-type", default=None, help="Filter by document type")
-    search_parser.add_argument("--mode", default="hybrid",
-                               choices=["exact", "keyword", "semantic", "hybrid"],
-                               help="Search mode")
+    search_parser.add_argument("--mode", default="hybrid-lexical",
+                               choices=["exact", "keyword", "semantic", "hybrid", "hybrid-lexical"],
+                               help="Search mode (default: hybrid-lexical, vectorless-first)")
     search_parser.add_argument("--top-k", type=int, default=8, help="Maximum results")
     search_parser.add_argument("--token-budget", type=int, default=6000, help="Token budget for results")
     search_parser.add_argument("--expand", action="store_true", help="Expand results with context")
@@ -149,6 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     manifest_parser.add_argument("--document-id", required=True, help="Document ID")
     manifest_parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # tree
+    tree_parser = subparsers.add_parser(
+        "tree",
+        help="Show document clause tree structure",
+    )
+    tree_parser.add_argument("--document-id", required=True, help="Document ID")
+    tree_parser.add_argument("--edition-id", default=None, help="Edition ID (default: latest)")
+    tree_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     # build-vectors
     build_vectors_parser = subparsers.add_parser(
@@ -361,20 +370,16 @@ def cmd_search(args: argparse.Namespace, settings: Settings) -> int:
             print(f"  Degradation: {response.degradation_reason}")
         print()
         for i, result in enumerate(response.results):
-            item = result.item
-            doc = result.document
-            print(f"  [{i+1}] {item.item_id} ({item.type.value}) - Score: {result.score:.4f}")
-            if item.number:
-                print(f"       Number: {item.number}")
-            if doc:
-                print(f"       Document: {doc.document_id} ({doc.edition_id})")
+            print(f"  [{i+1}] {result.item_id} - Score: {result.score:.4f}")
+            if result.number:
+                print(f"       Number: {result.number}")
+            print(f"       Document: {result.document_id} ({result.edition_id})")
             if result.match_type:
                 print(f"       Match: {result.match_type}")
             if result.has_more_context:
                 print(f"       [has more context]")
             # Print snippet
-            text = item.text or ""
-            snippet = text[:200] + ("..." if len(text) > 200 else "")
+            snippet = result.snippet[:200] + ("..." if len(result.snippet) > 200 else "")
             print(f"       {snippet}")
             print()
 
@@ -487,6 +492,22 @@ def cmd_manifest(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+def cmd_tree(args: argparse.Namespace, settings: Settings) -> int:
+    """Show document clause tree structure."""
+    from .tree import build_document_tree, get_tree_as_text
+    store, _ = _get_store_and_embedder(settings)
+    tree_data = build_document_tree(store, args.document_id, args.edition_id)
+    store.close()
+    if tree_data is None:
+        print(f"Document not found: {args.document_id}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(tree_data, indent=2, ensure_ascii=False))
+    else:
+        print(get_tree_as_text(tree_data))
+    return 0
+
+
 def cmd_build_vectors(args: argparse.Namespace, settings: Settings) -> int:
     """Build vector index."""
     store, embedder = _get_store_and_embedder(settings)
@@ -572,6 +593,8 @@ def main() -> int:
         return cmd_page(args, settings)
     elif args.command == "manifest":
         return cmd_manifest(args, settings)
+    elif args.command == "tree":
+        return cmd_tree(args, settings)
     elif args.command == "build-vectors":
         return cmd_build_vectors(args, settings)
     elif args.command == "serve-api":

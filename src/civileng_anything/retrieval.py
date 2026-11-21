@@ -28,6 +28,7 @@ from .schema import (
 from .store import Store
 from .index import VectorIndex
 from .embeddings import Embedder, get_embedder, HashingEmbedder
+from .tree import build_document_tree
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +335,148 @@ def _keyword_search(
     return results
 
 
+def _hybrid_lexical_search(
+    store: Store,
+    query: str,
+    document_id: Optional[str],
+    edition_id: Optional[str],
+    jurisdiction: Optional[str],
+    doc_type: Optional[str],
+    top_k: int,
+) -> list[SearchResult]:
+    """
+    Hybrid-lexical search: exact + BM25 keyword + tree-assisted ranking.
+    
+    This is the vectorless-first default mode. It combines:
+    1. Exact number search (highest priority)
+    2. BM25 keyword search (FTS5 with CJK pre-tokenization)
+    3. Tree-assisted boost: items whose ancestors/siblings match get a small boost
+    
+    No semantic/vector component.
+    """
+    # Get exact matches (highest priority)
+    exact_results = _exact_search(store, query, document_id, edition_id, jurisdiction, doc_type, top_k)
+    exact_ids = {r.item_id for r in exact_results}
+    
+    # Get keyword matches
+    keyword_results = _keyword_search(store, query, document_id, edition_id, jurisdiction, doc_type, top_k * 2)
+    keyword_ids = {r.item_id for r in keyword_results}
+    
+    # Build tree for tree-assisted ranking if we have a specific document
+    tree_boost_ids = set()
+    if document_id:
+        from .tree import build_document_tree
+        tree_data = build_document_tree(store, document_id, edition_id)
+        if tree_data and tree_data["tree"]:
+            # Find nodes whose title/snippet contains query terms
+            query_terms = set(query.lower().split())
+            matching_paths = set()
+            
+            def find_matching_nodes(nodes, path=()):
+                for node in nodes:
+                    node_text = f"{node.get('title', '')} {node.get('number', '')}".lower()
+                    if any(term in node_text for term in query_terms):
+                        matching_paths.add(path + (node['item_id'],))
+                    if node.get('children'):
+                        find_matching_nodes(node['children'], path + (node['item_id'],))
+            
+            find_matching_nodes(tree_data["tree"])
+            
+            # Boost: include siblings and children of matching nodes
+            for path in matching_paths:
+                # Add siblings (same parent)
+                if len(path) > 1:
+                    parent_path = path[:-1]
+                    def get_siblings(nodes, target_path):
+                        if len(target_path) == 1:
+                            return [n['item_id'] for n in nodes]
+                        for n in nodes:
+                            if n['item_id'] == target_path[0]:
+                                return get_siblings(n.get('children', []), target_path[1:])
+                        return []
+                    siblings = get_siblings(tree_data["tree"], parent_path)
+                    tree_boost_ids.update(siblings)
+                # Add children
+                def get_children(nodes, target_path):
+                    if not target_path:
+                        return []
+                    for n in nodes:
+                        if n['item_id'] == target_path[0]:
+                            if len(target_path) == 1:
+                                return [c['item_id'] for c in n.get('children', [])]
+                            return get_children(n.get('children', []), target_path[1:])
+                    return []
+                children = get_children(tree_data["tree"], path)
+                tree_boost_ids.update(children)
+    
+    # Merge results with scoring
+    # Exact: score 1.0
+    # Keyword + tree boost: score 0.8 + 0.1
+    # Keyword only: score 0.8
+    # Tree boost only: score 0.3
+    
+    merged = {}
+    
+    # Add exact results
+    for r in exact_results:
+        merged[r.item_id] = (r, 1.0, "exact")
+    
+    # Add keyword results
+    for r in keyword_results:
+        if r.item_id in merged:
+            # Already exact, keep exact
+            continue
+        score = 0.8
+        match_type = "keyword"
+        if r.item_id in tree_boost_ids:
+            score += 0.1
+            match_type = "hybrid-lexical"
+        merged[r.item_id] = (r, score, match_type)
+    
+    # Add tree-only boosts (items not in keyword but tree-related)
+    for item_id in tree_boost_ids:
+        if item_id not in merged:
+            item = store.get_item(item_id)
+            if item:
+                doc = store.get_document(item.document_id)
+                if doc:
+                    # Apply filters
+                    if jurisdiction and doc.jurisdiction != jurisdiction:
+                        continue
+                    if doc_type and doc.doc_type.value != doc_type:
+                        continue
+                    related = []
+                    for link in item.amendment_links:
+                        if isinstance(link, dict) and "item_id" in link:
+                            related.append(link["item_id"])
+                        elif isinstance(link, str):
+                            related.append(link)
+                    result = SearchResult(
+                        item_id=item.item_id,
+                        document_id=item.document_id,
+                        edition_id=item.edition_id,
+                        doc_title=doc.title,
+                        number=item.number,
+                        section_path=item.section_path,
+                        snippet=item.text[:200],
+                        pdf_page=item.pdf_page,
+                        printed_page=item.printed_page,
+                        content_origin=item.content_origin,
+                        status=item.status,
+                        score=0.3,
+                        match_type="hybrid-lexical",
+                        has_more_context=False,
+                        related=related,
+                    )
+                    merged[item_id] = (result, 0.3, "hybrid-lexical")
+    
+    # Sort by score descending, then by pdf_page for stability
+    sorted_results = sorted(merged.values(), key=lambda x: (-x[1], x[0].pdf_page, x[0].item_id))
+    
+    # Return top_k
+    return [r for r, _, _ in sorted_results[:top_k]]
+
+
 def _semantic_search(
     store: Store,
     index: VectorIndex,
@@ -407,7 +550,7 @@ def search(
     edition_id: Optional[str] = None,
     jurisdiction: Optional[str] = None,
     doc_type: Optional[str] = None,
-    mode: str = "hybrid",
+    mode: str = "hybrid-lexical",
     top_k: int = 8,
     token_budget: int = 6000,
     expand: bool = False,
@@ -415,7 +558,7 @@ def search(
     settings: Optional[Settings] = None,
 ) -> SearchResponse:
     """
-    Unified search across exact, keyword, semantic, and hybrid modes.
+    Unified search across exact, keyword, semantic, hybrid, and hybrid-lexical modes.
 
     Args:
         store: Store instance
@@ -424,15 +567,19 @@ def search(
         edition_id: Filter by edition
         jurisdiction: Filter by jurisdiction
         doc_type: Filter by document type
-        mode: Search mode (exact, keyword, semantic, hybrid)
+        mode: Search mode (exact, keyword, semantic, hybrid, hybrid-lexical)
+               Default is "hybrid-lexical" (vectorless-first: exact + BM25 + tree)
         top_k: Maximum results
         token_budget: Token budget for results
         expand: Whether to expand results with context
         embedder: Embedder to use (if None, will try to get from settings)
-        settings: Settings for embedder creation
+        settings: Settings for embedder creation and semantic_enabled flag
 
     Returns:
         SearchResponse with results and metadata
+
+    Raises:
+        ValueError: If semantic or hybrid mode requested but semantic_enabled=False or embedder not available
     """
     # Determine embedder
     if embedder is None and settings is not None:
@@ -450,14 +597,37 @@ def search(
     degraded = False
     degradation_reason = None
 
+    # Check semantic availability for modes that require it
+    semantic_required = mode_enum in (SearchMode.SEMANTIC, SearchMode.HYBRID)
+    semantic_available = False
+    if semantic_required:
+        if settings is not None and not settings.semantic_enabled:
+            raise ValueError(
+                f"Search mode '{mode}' requires semantic search, but semantic_enabled=False. "
+                f"Set CIVILENG_SEMANTIC_ENABLED=1 to enable."
+            )
+        semantic_available = index.has_vectors(embedder.name)
+        if not semantic_available:
+            raise ValueError(
+                f"Search mode '{mode}' requires a built semantic index. "
+                f"Run 'civileng build-vectors' first, or use 'hybrid-lexical' mode (default)."
+            )
+
     if mode_enum == SearchMode.EXACT:
         results = _exact_search(store, query, document_id, edition_id, jurisdiction, doc_type, top_k)
-        # Get baseline editions
         baseline_editions = _get_baseline_editions(store, results, document_id, edition_id)
         amendments_included = _check_amendments_included(store, results)
 
     elif mode_enum == SearchMode.KEYWORD:
         results = _keyword_search(store, query, document_id, edition_id, jurisdiction, doc_type, top_k)
+        baseline_editions = _get_baseline_editions(store, results, document_id, edition_id)
+        amendments_included = _check_amendments_included(store, results)
+
+    elif mode_enum == SearchMode.HYBRID_LEXICAL:
+        # Vectorless-first: exact + BM25 keyword + tree-assisted ranking
+        results = _hybrid_lexical_search(
+            store, query, document_id, edition_id, jurisdiction, doc_type, top_k
+        )
         baseline_editions = _get_baseline_editions(store, results, document_id, edition_id)
         amendments_included = _check_amendments_included(store, results)
 

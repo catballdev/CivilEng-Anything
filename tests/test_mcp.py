@@ -202,6 +202,7 @@ class TestMCPTools:
         expected = {
             "list_documents",
             "get_document_manifest",
+            "get_document_structure",
             "search",
             "get_section",
             "get_clause",
@@ -259,7 +260,13 @@ class TestMCPHandlers:
         assert len(result["results"]) > 0
 
     def test_search_semantic(self, mcp_setup):
-        """search should work in semantic mode after index build."""
+        """search should work in semantic mode after index build (requires semantic_enabled)."""
+        # Enable semantic and build index
+        from civileng_anything.config import Settings
+        from civileng_anything.mcp_server import _settings, _store
+        _settings.semantic_enabled = True
+        HANDLERS["build_vectors"]({"document_id": "TEST-001"})
+        
         result = HANDLERS["search"]({
             "query": "steel structures",
             "mode": "semantic",
@@ -271,7 +278,12 @@ class TestMCPHandlers:
         assert len(result["results"]) > 0
 
     def test_search_hybrid(self, mcp_setup):
-        """search should work in hybrid mode."""
+        """search should work in hybrid mode (requires semantic_enabled)."""
+        # Enable semantic and build index
+        from civileng_anything.mcp_server import _settings
+        _settings.semantic_enabled = True
+        HANDLERS["build_vectors"]({"document_id": "TEST-001"})
+        
         result = HANDLERS["search"]({
             "query": "steel",
             "mode": "hybrid",

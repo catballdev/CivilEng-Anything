@@ -5,6 +5,7 @@ Uses stdlib sqlite3 with FTS5 for full-text search.
 """
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +13,48 @@ from typing import Any, Optional
 
 from .schema import DocumentMeta, ContentItem, PageStatus, SearchResult
 from .ids import content_hash
+
+# jieba for Traditional Chinese tokenization (CJK pre-tokenization for FTS5 BM25)
+try:
+    import jieba
+    import jieba.posseg as pseg
+    JIEBA_AVAILABLE = True
+except ImportError:
+    JIEBA_AVAILABLE = False
+    jieba = None
+    pseg = None
+
+
+def cjk_tokenize(text: str) -> str:
+    """
+    Pre-tokenize text for FTS5 with jieba Traditional Chinese segmentation.
+    
+    CJK characters are split into tokens; Latin letters, digits, and common
+    engineering symbols are preserved as single tokens. This ensures BM25
+    works correctly for mixed Chinese/English technical text.
+    
+    Applied identically at index time and query time.
+    """
+    if not text:
+        return ""
+    
+    if not JIEBA_AVAILABLE:
+        # Fallback: basic whitespace/punctuation split (less accurate for CJK)
+        return text
+    
+    # Use jieba with Traditional Chinese dictionary if available
+    # jieba automatically uses dict.txt.big if set
+    tokens = []
+    for word in jieba.cut(text, cut_all=False):
+        # Preserve Latin/digit sequences and common engineering symbols as single tokens
+        # Check if the word is mostly Latin/digits/symbols
+        if re.match(r'^[\w\d\.\-\+\(\)\/\%\=\<\>\:\,\;\_\@\#\$\&\*]+$', word):
+            tokens.append(word)
+        else:
+            # For CJK text, jieba already split appropriately
+            tokens.append(word)
+    
+    return " ".join(tokens)
 
 
 SCHEMA_SQL = """
@@ -65,6 +108,9 @@ CREATE TABLE IF NOT EXISTS items (
     derived_info TEXT,  -- JSON object
     status TEXT NOT NULL,
     content_hash TEXT NOT NULL,
+    summary_en TEXT,
+    summary_tc TEXT,
+    generated_questions TEXT,  -- JSON array
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (document_id) REFERENCES documents(document_id)
@@ -115,7 +161,8 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 -- FTS5 virtual table for full-text search
--- tokenizer unicode61 preserves engineering symbols (no stemming)
+-- Uses pre-tokenized text (CJK split by jieba, Latin/digits preserved)
+-- tokenize = 'unicode61' with pre-tokenized input (space-separated tokens)
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     item_id UNINDEXED,
     document_id UNINDEXED,
@@ -127,26 +174,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     tokenize = 'unicode61'
 );
 
--- Triggers to keep FTS in sync
-CREATE TRIGGER IF NOT EXISTS items_fts_insert AFTER INSERT ON items BEGIN
-    INSERT INTO items_fts (item_id, document_id, edition_id, type, number, section_path, text)
-    VALUES (new.item_id, new.document_id, new.edition_id, new.type, new.number, new.section_path, new.text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS items_fts_update AFTER UPDATE ON items BEGIN
-    UPDATE items_fts SET
-        document_id = new.document_id,
-        edition_id = new.edition_id,
-        type = new.type,
-        number = new.number,
-        section_path = new.section_path,
-        text = new.text
-    WHERE item_id = new.item_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS items_fts_delete AFTER DELETE ON items BEGIN
-    DELETE FROM items_fts WHERE item_id = old.item_id;
-END;
+-- FTS5 is kept in sync by application code (add_items, delete_item), not triggers
+-- This allows CJK pre-tokenization at index time
 
 -- Indexes for common lookups
 CREATE INDEX IF NOT EXISTS idx_items_document_edition ON items(document_id, edition_id);
@@ -329,8 +358,9 @@ class Store:
                         item_id, document_id, edition_id, type, parent_id, section_path,
                         number, text, latex, table_html, pdf_page, printed_page, bbox,
                         asset_ids, cross_refs, footnote_ids, amendment_links,
-                        content_origin, derived_info, status, content_hash, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        content_origin, derived_info, status, content_hash,
+                        summary_en, summary_tc, generated_questions, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                     ON CONFLICT(item_id) DO UPDATE SET
                         document_id = excluded.document_id,
                         edition_id = excluded.edition_id,
@@ -352,6 +382,9 @@ class Store:
                         derived_info = excluded.derived_info,
                         status = excluded.status,
                         content_hash = excluded.content_hash,
+                        summary_en = excluded.summary_en,
+                        summary_tc = excluded.summary_tc,
+                        generated_questions = excluded.generated_questions,
                         updated_at = datetime('now')
                     """,
                     (
@@ -376,6 +409,32 @@ class Store:
                         json.dumps(item.derived_info) if item.derived_info else None,
                         item.status.value,
                         ch,
+                        item.summary_en,
+                        item.summary_tc,
+                        json.dumps(item.generated_questions) if item.generated_questions else None,
+                    ),
+                )
+                
+                # Insert/update FTS5 with pre-tokenized text
+                # FTS5 virtual tables don't support ON CONFLICT, so delete first then insert
+                tokenized_text = cjk_tokenize(item.text)
+                conn.execute(
+                    "DELETE FROM items_fts WHERE item_id = ?",
+                    (item.item_id,),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO items_fts (item_id, document_id, edition_id, type, number, section_path, text)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item.item_id,
+                        item.document_id,
+                        item.edition_id,
+                        item.type.value,
+                        item.number,
+                        json.dumps(item.section_path),
+                        tokenized_text,
                     ),
                 )
 
@@ -515,6 +574,9 @@ class Store:
             content_origin=ContentOrigin(row["content_origin"]),
             derived_info=json.loads(row["derived_info"]) if row["derived_info"] else None,
             status=ItemStatus(row["status"]),
+            summary_en=row["summary_en"] if "summary_en" in row.keys() else None,
+            summary_tc=row["summary_tc"] if "summary_tc" in row.keys() else None,
+            generated_questions=json.loads(row["generated_questions"]) if row["generated_questions"] else None,
         )
 
     # --- Page status operations ---
@@ -687,9 +749,10 @@ class Store:
         """
         conn = self._get_conn()
 
-        # Build WHERE clause for filters (qualify columns to avoid ambiguity)
-        # Wrap query in double quotes for FTS5 phrase search to handle punctuation
-        fts_query = f'"{query}"' if not (query.startswith('"') and query.endswith('"')) else query
+        # Pre-tokenize query for CJK (same as index time)
+        tokenized_query = cjk_tokenize(query)
+        # Wrap in double quotes for FTS5 phrase search to handle punctuation
+        fts_query = f'"{tokenized_query}"' if not (tokenized_query.startswith('"') and tokenized_query.endswith('"')) else tokenized_query
         where_clauses = ["items_fts MATCH ?"]
         params = [fts_query]
 

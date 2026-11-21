@@ -32,6 +32,7 @@ from .retrieval import (
     get_related,
     SearchResponse,
 )
+from .tree import build_document_tree
 from .embeddings import get_embedder, HashingEmbedder
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,7 @@ class SearchRequest(BaseModel):
     edition_id: Optional[str] = None
     jurisdiction: Optional[str] = None
     doc_type: Optional[str] = None
-    mode: str = "hybrid"
+    mode: str = "hybrid-lexical"
     top_k: int = 8
     token_budget: int = 6000
     expand: bool = False
@@ -141,6 +142,16 @@ async def get_manifest(document_id: str):
     if manifest is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return manifest
+
+
+@app.get("/documents/{document_id}/tree")
+async def get_document_tree(document_id: str, edition_id: Optional[str] = None):
+    """Get document clause tree structure."""
+    store = get_store()
+    tree_data = build_document_tree(store, document_id, edition_id)
+    if tree_data is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return tree_data
 
 
 @app.post("/search", response_model=SearchResponseModel)

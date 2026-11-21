@@ -62,6 +62,7 @@ class SearchMode(str, Enum):
     KEYWORD = "keyword"
     SEMANTIC = "semantic"
     HYBRID = "hybrid"
+    HYBRID_LEXICAL = "hybrid-lexical"
 
 
 class DocumentMeta(BaseModel):
@@ -116,6 +117,10 @@ class ContentItem(BaseModel):
     content_origin: ContentOrigin = ContentOrigin.ORIGINAL
     derived_info: Optional[dict] = None
     status: ItemStatus = ItemStatus.PARSED
+    # Nullable summary fields (structure only; generation is out of scope)
+    summary_en: Optional[str] = None
+    summary_tc: Optional[str] = None
+    generated_questions: Optional[list[str]] = None
 
 
 class PageStatus(BaseModel):

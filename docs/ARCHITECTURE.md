@@ -69,13 +69,36 @@ footnotes, amendment targets) → build indexes → publish dataset version`.
 
 ## Retrieval
 
-Three complementary modes over the same core:
+Three complementary modes over the same core, plus a **vectorless-first default**:
+
+### Retrieval strategy (vectorless-first)
+
+**Semantic search is optional and OFF by default.** The default search mode is
+`hybrid-lexical` (exact + BM25 + clause-tree navigation). This avoids the
+operational burden of embedding models, vector index maintenance, and GPU
+dependencies for the majority of engineering lookup tasks, which are
+number-driven or keyword-driven.
+
+Modes:
 
 1. **Exact** — by document/edition + clause, figure, table or equation number.
-2. **Full-text / BM25** — SQLite FTS5; engineering symbols and identifiers
-   (e.g. `fcu`, `b_w`, `9.2.1`) are kept searchable (no destructive stemming).
-3. **Semantic** — multilingual embeddings (default BGE-M3, replaceable);
+2. **Keyword (BM25)** — SQLite FTS5 with **jieba Traditional-Chinese
+   pre-tokenization**; CJK characters are split into tokens while Latin letters,
+   digits, and engineering symbols (e.g. `fcu`, `b_w`, `9.2.1`, `MPa`) are
+   preserved as single tokens. Applied identically at index time and query time.
+3. **Hybrid-lexical (DEFAULT)** — combines Exact + Keyword + **clause-tree
+   assisted ranking**: items whose ancestors or siblings in the section
+   hierarchy match the query receive a small score boost. No vector component.
+4. **Semantic** — multilingual embeddings (default BGE-M3, replaceable);
    Traditional Chinese / Cantonese / English queries against English documents.
+   **Requires** `semantic_enabled=true` AND a built vector index
+   (`civileng build-vectors`). Clear error if unavailable — no silent fallback.
+5. **Hybrid** — reciprocal-rank fusion of Keyword + Semantic. Same availability
+   requirements as Semantic.
+
+Configuration:
+- `semantic_enabled: bool = False` (env `CIVILENG_SEMANTIC_ENABLED`)
+- `embed_model` still has a default but is only used when `semantic_enabled=true`
 
 Results always show the baseline edition and whether registered amendments are
 included; filters: document, edition, jurisdiction, doc_type. When a hit clause
@@ -89,6 +112,17 @@ rows, units and footnotes. Figure hits return a retrievable image asset
 
 Pure retrieval returns evidence directly; no chat model is required. Graph
 reasoning / answer generation (LightRAG) is an optional layer on top.
+
+### Clause tree navigation
+
+Deterministic tree built from canonical `section_path` hierarchy (sections →
+clauses → paragraphs). Exposed via:
+- CLI: `civileng tree --document-id <id> [--edition-id <id>] [--json]`
+- HTTP: `GET /documents/{id}/tree?edition_id=...`
+- MCP: `get_document_structure(document_id, edition_id?)`
+
+Tree nodes include nullable summary fields (`summary_en`, `summary_tc`,
+`generated_questions`) — structure only, generation is out of scope.
 
 ## Interfaces (shared core, shared result schema)
 

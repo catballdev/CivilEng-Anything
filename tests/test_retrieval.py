@@ -375,35 +375,81 @@ class TestSearch:
         for r in response.results:
             assert r.match_type == "keyword"
 
-    def test_search_semantic_mode(self, populated_store):
-        """Semantic mode should use vector index."""
+    def test_search_semantic_mode_requires_semantic_enabled(self, populated_store):
+        """Semantic mode should raise ValueError when semantic_enabled=False."""
         embedder = HashingEmbedder(dim=64)
-        response = search(
-            store=populated_store,
-            query="steel structures",
-            mode=SearchMode.SEMANTIC.value,
-            top_k=5,
-            embedder=embedder,
-        )
-        # Index not built yet, should return empty with degraded=True
-        assert response.degraded is True
-        assert "semantic index not built" in response.degradation_reason
-        assert response.results == []
+        # Default settings has semantic_enabled=False
+        settings = Settings()
+        with pytest.raises(ValueError, match="semantic_enabled=False"):
+            search(
+                store=populated_store,
+                query="steel structures",
+                mode=SearchMode.SEMANTIC.value,
+                top_k=5,
+                embedder=embedder,
+                settings=settings,
+            )
 
-    def test_search_hybrid_mode_fallback(self, populated_store):
-        """Hybrid mode should fall back to keyword when semantic unavailable."""
+    def test_search_semantic_mode_requires_index(self, populated_store):
+        """Semantic mode should raise ValueError when index not built."""
         embedder = HashingEmbedder(dim=64)
+        # Enable semantic but don't build index
+        settings = Settings(semantic_enabled=True)
+        with pytest.raises(ValueError, match="built semantic index"):
+            search(
+                store=populated_store,
+                query="steel structures",
+                mode=SearchMode.SEMANTIC.value,
+                top_k=5,
+                embedder=embedder,
+                settings=settings,
+            )
+
+    def test_search_hybrid_mode_requires_semantic_enabled(self, populated_store):
+        """Hybrid mode should raise ValueError when semantic_enabled=False."""
+        embedder = HashingEmbedder(dim=64)
+        settings = Settings()
+        with pytest.raises(ValueError, match="semantic_enabled=False"):
+            search(
+                store=populated_store,
+                query="steel structures",
+                mode=SearchMode.HYBRID.value,
+                top_k=5,
+                embedder=embedder,
+                settings=settings,
+            )
+
+    def test_search_hybrid_mode_requires_index(self, populated_store):
+        """Hybrid mode should raise ValueError when index not built."""
+        embedder = HashingEmbedder(dim=64)
+        settings = Settings(semantic_enabled=True)
+        with pytest.raises(ValueError, match="built semantic index"):
+            search(
+                store=populated_store,
+                query="steel structures",
+                mode=SearchMode.HYBRID.value,
+                top_k=5,
+                embedder=embedder,
+                settings=settings,
+            )
+
+    def test_search_hybrid_lexical_mode(self, populated_store):
+        """Hybrid-lexical mode should work without semantic enabled (vectorless-first)."""
+        embedder = HashingEmbedder(dim=64)
+        settings = Settings(semantic_enabled=False)  # Default
         response = search(
             store=populated_store,
             query="steel structures",
-            mode=SearchMode.HYBRID.value,
+            mode=SearchMode.HYBRID_LEXICAL.value,
             top_k=5,
             embedder=embedder,
+            settings=settings,
         )
-        assert response.degraded is True
-        assert "falling back to keyword" in response.degradation_reason
-        # Should still return keyword results
+        assert response.degraded is False
         assert len(response.results) > 0
+        # Results should have match_type exact, keyword, or hybrid-lexical
+        for r in response.results:
+            assert r.match_type in ("exact", "keyword", "hybrid-lexical")
 
     def test_search_with_document_filter(self, populated_store):
         """Search should respect document_id filter."""

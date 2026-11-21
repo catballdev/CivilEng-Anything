@@ -17,6 +17,9 @@ class Settings:
     # Embedding model for semantic search (fastembed-compatible default)
     embed_model: str = "BAAI/bge-base-en-v1.5"
 
+    # Semantic search is OPTIONAL (vectorless-first); default OFF
+    semantic_enabled: bool = False
+
     # Retrieval defaults
     top_k: int = 8
     token_budget: int = 6000
@@ -57,6 +60,7 @@ def get_settings() -> Settings:
     return Settings(
         data_dir=Path(os.getenv("CIVILENG_DATA_DIR", "./data")).resolve(),
         embed_model=os.getenv("CIVILENG_EMBED_MODEL", "BAAI/bge-base-en-v1.5"),
+        semantic_enabled=os.getenv("CIVILENG_SEMANTIC_ENABLED", "false").lower() in ("1", "true", "yes"),
         top_k=int(os.getenv("CIVILENG_TOP_K", "8")),
         token_budget=int(os.getenv("CIVILENG_TOKEN_BUDGET", "6000")),
         host=os.getenv("CIVILENG_HOST", "127.0.0.1"),
