@@ -15,6 +15,7 @@ from .config import Settings, get_settings
 from .store import Store
 from .schema import DocumentMeta, DocType
 from .ingest import Ingestor
+from .import_parse import ImportParser, register_document_if_needed
 from .pdfinspect import inspect_pdf
 from .retrieval import (
     list_documents,
@@ -71,6 +72,28 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--language", default="en", help="Language code")
     ingest_parser.add_argument("--parser-name", default="mineru", help="Parser name")
     ingest_parser.add_argument("--parser-version", default="3.4.5", help="Parser version")
+
+    # import-parse
+    import_parse_parser = subparsers.add_parser(
+        "import-parse",
+        help="Import an existing MinerU parse output directory",
+    )
+    import_parse_parser.add_argument("--document-id", required=True, help="Document ID (must be registered)")
+    import_parse_parser.add_argument("--edition-id", required=True, help="Edition ID")
+    import_parse_parser.add_argument("--mineru-dir", required=True, type=Path, help="Path to MinerU output directory (e.g., .../auto/)")
+    import_parse_parser.add_argument("--parser-name", default="mineru", help="Parser name")
+    import_parse_parser.add_argument("--parser-version", default="3.4.5", help="Parser version")
+    import_parse_parser.add_argument("--parse-location", default="Kaggle (GPU T4 x2)", help="Where the parse was run")
+    import_parse_parser.add_argument("--parse-date", default=None, help="Parse date (ISO format, default: today)")
+    import_parse_parser.add_argument("--register-if-missing", action="store_true", help="Register document if not found (requires --title, --pdf-path)")
+    import_parse_parser.add_argument("--title", default=None, help="Document title (required if --register-if-missing)")
+    import_parse_parser.add_argument("--pdf-path", default=None, type=Path, help="Path to original PDF (required if --register-if-missing)")
+    import_parse_parser.add_argument("--document-family-id", default=None, help="Document family ID (for registration)")
+    import_parse_parser.add_argument("--publisher", default=None, help="Publisher (for registration)")
+    import_parse_parser.add_argument("--jurisdiction", default=None, help="Jurisdiction (for registration)")
+    import_parse_parser.add_argument("--doc-type", default="government_code", choices=[e.value for e in DocType], help="Document type (for registration)")
+    import_parse_parser.add_argument("--language", default="en", help="Language code (for registration)")
+    import_parse_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     # status
     status_parser = subparsers.add_parser(
@@ -242,6 +265,80 @@ def cmd_doctor(args: argparse.Namespace, settings: Settings) -> int:
         print(f"  Error: {e}")
 
     return 0
+
+
+def cmd_import_parse(args: argparse.Namespace, settings: Settings) -> int:
+    """Import an existing MinerU parse output."""
+    store = Store(settings.db_path)
+    
+    try:
+        # If document not registered and --register-if-missing, register it
+        doc = store.get_document(args.document_id)
+        if doc is None:
+            if not args.register_if_missing:
+                print(f"Error: Document not registered: {args.document_id}", file=sys.stderr)
+                print("Use --register-if-missing with --title and --pdf-path to register first.", file=sys.stderr)
+                return 1
+            if not args.title or not args.pdf_path:
+                print("Error: --title and --pdf-path are required with --register-if-missing", file=sys.stderr)
+                return 1
+            if not args.pdf_path.exists():
+                print(f"Error: PDF file not found: {args.pdf_path}", file=sys.stderr)
+                return 1
+            
+            # Register the document
+            doc = register_document_if_needed(
+                settings=settings,
+                store=store,
+                document_id=args.document_id,
+                edition_id=args.edition_id,
+                title=args.title,
+                pdf_path=args.pdf_path,
+                document_family_id=args.document_family_id,
+                publisher=args.publisher,
+                jurisdiction=args.jurisdiction,
+                doc_type=DocType(args.doc_type),
+                language=args.language,
+                parser_name=args.parser_name,
+                parser_version=args.parser_version,
+            )
+            print(f"Registered document: {doc.document_id} ({doc.edition_id})")
+        
+        # Import the parse
+        importer = ImportParser(settings, store)
+        
+        report = importer.import_parse(
+            document_id=args.document_id,
+            edition_id=args.edition_id,
+            mineru_dir=args.mineru_dir,
+            parser_name=args.parser_name,
+            parser_version=args.parser_version,
+            parse_location=args.parse_location,
+            parse_date=args.parse_date,
+        )
+        
+        if args.json:
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(f"Import complete for {args.document_id} ({args.edition_id})")
+            print(f"  Run ID: {report.run_id}")
+            print(f"  Pages done: {len(report.pages_done)}")
+            print(f"  Pages failed: {len(report.pages_failed)}")
+            print(f"  Items created: {report.items_created}")
+            print(f"  Items updated: {report.items_updated}")
+            print(f"  Parser: {report.parser} {report.parser_version}")
+            print(f"  Location: {report.parse_location}")
+            print(f"  Date: {report.parse_date}")
+        
+        return 0
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
 
 
 def cmd_ingest(args: argparse.Namespace, settings: Settings) -> int:
@@ -577,6 +674,8 @@ def main() -> int:
         return cmd_doctor(args, settings)
     elif args.command == "ingest":
         return cmd_ingest(args, settings)
+    elif args.command == "import-parse":
+        return cmd_import_parse(args, settings)
     elif args.command == "status":
         return cmd_status(args, settings)
     elif args.command == "search":

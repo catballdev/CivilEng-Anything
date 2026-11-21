@@ -352,6 +352,9 @@ class Store:
         with self._transaction() as conn:
             for item in items:
                 ch = content_hash(item.text)
+                # DEBUG
+                print(f"DEBUG add_items: item_id={item.item_id}, summary_en={item.summary_en}")
+                print(f"DEBUG: item tuple len = {len((item.item_id, item.document_id, item.edition_id, item.type.value, item.parent_id, json.dumps(item.section_path), item.number, item.text, item.latex, item.table_html, item.pdf_page, item.printed_page, json.dumps(item.bbox) if item.bbox else None, json.dumps(item.asset_ids), json.dumps(item.cross_refs), json.dumps(item.footnote_ids), json.dumps(item.amendment_links), item.content_origin.value, json.dumps(item.derived_info) if item.derived_info else None, item.status.value, ch, item.summary_en, item.summary_tc, json.dumps(item.generated_questions) if item.generated_questions else None))}")
                 conn.execute(
                     """
                     INSERT INTO items (
